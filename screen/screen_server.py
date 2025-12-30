@@ -1,41 +1,34 @@
 import socket
-import tkinter
-from PIL import Image, ImageTk
+from PIL import ImageGrab
 from io import BytesIO
+import time
 
-class App():
-    def __init__(self):
-        self.root = tkinter.Tk()
-        self.root.title("UDP Screen Viewer")
-        self.label = tkinter.Label(self.root)
-        self.label.pack()
-        
-        # Setup UDP Socket
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(('0.0.0.0', 10000))
-        # Increase buffer size for large image packets
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1000000)
-        
-        self.update_image()
-        self.root.mainloop()
+# Target 
+VIEWER_IP = '192.168.1.142'
+PORT = 10000
 
-    def update_image(self):
-        try:
-            # UDP just receives whatever comes in
-            # 65507 is the max size for a UDP packet
-            image_bytes, addr = self.sock.recvfrom(65507)
-            
-            # Load and display
-            image = Image.open(BytesIO(image_bytes))
-            photo_image = ImageTk.PhotoImage(image)
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-            self.label.config(image=photo_image)
-            self.label.image = photo_image
-        except Exception as e:
-            # If a packet is lost or corrupted, we just skip it!
-            pass
+print("Sending screen via UDP...")
 
-        # Check for a new frame very quickly
-        self.root.after(1, self.update_image)
-
-app = App()
+while True:
+    # 1. Capture screen
+    screen = ImageGrab.grab()
+    
+    # 2. SHRINK IT (Essential for UDP)
+    # Most UDP limits are ~65kb. We resize to 800x600 for safety.
+    screen = screen.resize((800, 600))
+    
+    # 3. Compress to JPEG
+    buffer = BytesIO()
+    screen.save(buffer, format="JPEG", quality=50) # Lower quality = Higher FPS
+    data = buffer.getvalue()
+    
+    # 4. Check size (UDP Limit)
+    if len(data) < 65507:
+        sock.sendto(data, (VIEWER_IP, PORT))
+    else:
+        print("Frame too large for UDP!")
+    
+    # Small sleep to control FPS (e.g. 30 FPS)
+    time.sleep(0.03)

@@ -1,34 +1,55 @@
 import socket
-from PIL import ImageGrab
+import tkinter
+
+from PIL import ImageGrab, Image, ImageTk
 from io import BytesIO
-import time
 
-# Target 
-VIEWER_IP = '192.168.1.142'
-PORT = 10000
+class App():
+    def __init__(self):
+        self.root = tkinter.Tk()
+        self.label = tkinter.Label(self.root)
+        self.label.pack()
+        self.init_connection()
+        self.update_image()
+        self.root.mainloop()
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def init_connection(self):
+        # create a TCP/IP socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-print("Sending screen via UDP...")
+        # bind the socket to a local address
+        server_address = ('0.0.0.0', 10000)
+        print('starting up on {} port {}'.format(*server_address))
+        sock.bind(server_address)
 
-while True:
-    # 1. Capture screen
-    screen = ImageGrab.grab()
-    
-    # 2. SHRINK IT (Essential for UDP)
-    # Most UDP limits are ~65kb. We resize to 800x600 for safety.
-    screen = screen.resize((800, 600))
-    
-    # 3. Compress to JPEG
-    buffer = BytesIO()
-    screen.save(buffer, format="JPEG", quality=50) # Lower quality = Higher FPS
-    data = buffer.getvalue()
-    
-    # 4. Check size (UDP Limit)
-    if len(data) < 65507:
-        sock.sendto(data, (VIEWER_IP, PORT))
-    else:
-        print("Frame too large for UDP!")
-    
-    # Small sleep to control FPS (e.g. 30 FPS)
-    time.sleep(0.03)
+        # listen for incoming connections
+        sock.listen(1)
+
+        # accept a connection
+        print('waiting for a connection')
+        connection, client_address = sock.accept()
+        self.connection = connection
+
+    def update_image(self):
+        # receive the size of the screenshot
+        size_bytes = self.connection.recv(4)    
+        size = int.from_bytes(size_bytes, byteorder='big')    
+
+        # receive the screenshot
+        image_bytes = self.connection.recv(size)
+            
+        try:
+            # display the screenshot
+            image = Image.open(BytesIO(image_bytes))
+
+            photo_image=ImageTk.PhotoImage(image)
+
+            self.label.config(image=photo_image)
+            self.label.image = photo_image
+            self.label.pack()
+        except:            
+            pass
+
+        self.root.after(10, self.update_image)
+
+app=App()
